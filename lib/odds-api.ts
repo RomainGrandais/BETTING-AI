@@ -114,11 +114,11 @@ async function fetchSportOdds(sportKey: string, sportName: string, competition: 
     .filter(m => m.odds.length > 0)
 }
 
-// Legacy function for backwards compatibility — 48h from now
+// Manual analyze endpoint — 24h from now
 export async function fetchUpcomingMatches(): Promise<Match[]> {
   const now = new Date()
-  const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000)
-  return fetchMatchesInWindow(now, in48h)
+  const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  return fetchMatchesInWindow(now, in24h)
 }
 
 interface OddsApiEvent {
