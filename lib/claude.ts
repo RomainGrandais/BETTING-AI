@@ -21,26 +21,29 @@ export interface BetDecision {
   reasoning: string
 }
 
-const SYSTEM_PROMPT = `Tu es un analyste expert en paris sportifs avec 20 ans d'expérience dans tous les sports.
-Tu gères un portefeuille de paris sportifs avec pour objectif de maximiser le ROI à long terme.
+const SYSTEM_PROMPT = `Tu es un analyste expert en paris sportifs avec 25 ans d'expérience en gestion de portefeuille.
+Ton objectif : croissance EXPONENTIELLE de la bankroll. Pas de bets "bateau" - chaque décision doit être justifiée solidement.
 
-Principes fondamentaux :
-- Tu cherches uniquement des VALUE BETS : paris où la probabilité réelle dépasse la probabilité implicite des cotes
-- Tu appliques une gestion stricte de la bankroll (Kelly Criterion fractionnel)
-- Tu analyses les cotes pour détecter les inefficacités du marché
-- Tu diversifies sur plusieurs sports pour réduire le risque
-- Tu évites les matchs avec trop d'incertitude ou sans information suffisante
+EXIGENCES STRICTES :
+- AUCUN pari sans evidence statistique ou tendance TRÈS claire
+- EV positif minimal : +12% (pas +5% - cela c'est du bruit)
+- Rejeter les inefficacités de marché "douteuses" - il faut une raison SOLIDE que le marché se trompe
+- Cotes entre 1.60 et 3.50 (risque/rendement optimal, pas les outsiders)
+- MAXIMUM 2-3 bets par session - qualité sur quantité
+- Chaque pari doit citer 2-3 facteurs spécifiques qui justifient l'edge
 
-Critères de sélection :
-- Valeur attendue (EV) positif minimal : +5%
-- Cotes entre 1.50 et 4.00 (meilleur ratio risque/rendement)
-- Maximum 3-5 paris par session d'analyse
-- Priorité aux sports et compétitions que tu connais bien
+ANALYSE REQUISE POUR CHAQUE MATCH :
+1. Écarts de cotes suspects : si les cotes diffèrent, pourquoi? Surréaction du marché?
+2. Forme et tendances : stats récentes, dynamique momentum, blessures
+3. Facteurs contextuels : domicile/extérieur, fatigue, enjeux du match
+4. Confiance dans ta probabilité : modérée/haute/très haute (ne pas surpasser le marché sans raison)
+5. Comparaison cote-probabilité : qu'elle est l'écart exact en % et est-ce justifié?
 
-Pour chaque match analysé, estime la probabilité réelle de chaque issue basée sur :
-- La logique des cotes (marché efficient = tes ajustements doivent être justifiés)
-- La réputation et le niveau des équipes/joueurs
-- Le contexte de la compétition
+REJETS AUTOMATIQUES :
+- Équipes/joueurs inconnus ou données insuffisantes
+- Cotes inefficaces où tu "penses juste" sans facteur spécifique
+- Matchs sans contexte clair (amical, test, etc)
+- Probabilités estimées trop proches de celle du marché (<+8% EV réel)
 
 Réponds UNIQUEMENT en JSON valide, sans markdown, sans commentaires.`
 
@@ -64,20 +67,17 @@ export async function analyzeMatchesWithClaude(
     odds: m.odds.map(o => ({ label: o.label, value: o.value, type: o.betType })),
   }))
 
-  const userMessage = `Bankroll actuelle: €${currentBankroll.toFixed(2)}
-Paris actifs en cours: ${activeBetsCount}
-Matchs disponibles dans les 48h: ${selectedMatches.length}
+  const userMessage = `PARAMÈTRES CRITIQUE :
+Bankroll: €${currentBankroll.toFixed(2)} | Paris actifs: ${activeBetsCount} | Matchs: ${selectedMatches.length}
 
-Analyse ces matchs et sélectionne les meilleurs value bets.
-Pour chaque pari sélectionné, fournis:
-- matchId
-- betLabel (ex: "Victoire Real Madrid", "Plus de 2.5 buts")
-- betType (1X2, OU, HC, etc.)
-- odds (la cote choisie)
-- estimatedProbability (ta probabilité estimée, entre 0 et 1)
-- reasoning (raisonnement court en français, max 150 mots)
+INSTRUCTIONS STRICTES :
+1. Analyse profondément - ne pas faire de guesses
+2. Maximum 2-3 bets SEULEMENT si l'edge est TRÈS clair (+12% EV minimum)
+3. Pour chaque bet, détaille POURQUOI le marché se trompe (pas juste "je pense que...")
+4. Si tu trouves 0 bet avec +12% EV, retourne une liste vide - mieux que de forcer
+5. Cite les facteurs spécifiques : stats, tendances, contexte, écarts de cotes
 
-Réponds avec ce JSON exact:
+Format de réponse JSON:
 {
   "bets": [
     {
@@ -86,10 +86,10 @@ Réponds avec ce JSON exact:
       "betType": "...",
       "odds": 0.0,
       "estimatedProbability": 0.0,
-      "reasoning": "..."
+      "reasoning": "Facteur 1: [spécifique]. Facteur 2: [spécifique]. Facteur 3: [spécifique]. EV estimé: +X%"
     }
   ],
-  "sessionSummary": "Résumé de la session en 50 mots"
+  "sessionSummary": "Nombre de bets trouvés, critères appliqués"
 }
 
 Matchs à analyser:
@@ -130,7 +130,12 @@ ${JSON.stringify(matchesJson, null, 2)}`
     if (!match) continue
 
     const ev = expectedValue(bet.odds, bet.estimatedProbability)
-    if (ev <= 0) continue // Skip negative EV bets
+
+    // STRICT: Minimum +10% EV for exponential growth (not +5%)
+    if (ev < 0.10) {
+      console.log(`Rejecting ${bet.matchId}: EV ${(ev * 100).toFixed(1)}% < 10% minimum`)
+      continue
+    }
 
     const stake = calculateStake(currentBankroll, bet.odds, bet.estimatedProbability)
     if (stake < 0.5) continue
