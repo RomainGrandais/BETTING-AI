@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { fetchUpcomingMatches } from '@/lib/odds-api'
+import { fetchMatchesInWindow } from '@/lib/odds-api'
 import { analyzeMatchesWithClaude } from '@/lib/claude'
 import { supabaseAdmin } from '@/lib/supabase'
 
@@ -25,8 +25,15 @@ export async function POST() {
       .select('*', { count: 'exact', head: true })
       .eq('status', 'pending')
 
-    // 3. Fetch upcoming matches via The Odds API
-    const matches = await fetchUpcomingMatches()
+    // 3. Fetch matches in fixed daily window: 6 AM UTC today → 6 AM UTC tomorrow
+    // (same window as the cron, so manual analysis always covers the full day)
+    const now = new Date()
+    const windowStart = new Date(now)
+    windowStart.setUTCHours(6, 0, 0, 0)
+    if (now.getUTCHours() < 6) windowStart.setUTCDate(windowStart.getUTCDate() - 1)
+    const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000)
+
+    const matches = await fetchMatchesInWindow(windowStart, windowEnd)
 
     if (matches.length === 0) {
       return NextResponse.json({
