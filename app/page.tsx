@@ -115,6 +115,21 @@ export default function Dashboard() {
     }
   }
 
+  const handleUnsettle = async (betId: string) => {
+    try {
+      const res = await fetch('/api/unsettle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ betId }),
+      })
+      const data = await res.json()
+      if (data.success) await fetchData()
+      else setError(data.error)
+    } catch {
+      setError('Erreur lors de la correction')
+    }
+  }
+
   // Sort by match start time ascending (soonest first)
   const sortedBets = [...bets].sort((a, b) =>
     new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
@@ -304,7 +319,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 settledBets.map(bet => (
-                  <BetCard key={bet.id} bet={bet} />
+                  <BetCard key={bet.id} bet={bet} onUnsettle={handleUnsettle} showActions={true} />
                 ))
               )}
             </div>

@@ -29,6 +29,7 @@ export interface Bet {
 interface Props {
   bet: Bet
   onSettle?: (betId: string, result: 'won' | 'lost' | 'void') => void
+  onUnsettle?: (betId: string) => void
   showActions?: boolean
 }
 
@@ -46,7 +47,7 @@ const sportEmoji: Record<string, string> = {
   eSport: '🎮',
 }
 
-export default function BetCard({ bet, onSettle, showActions = false }: Props) {
+export default function BetCard({ bet, onSettle, onUnsettle, showActions = false }: Props) {
   const [expanded, setExpanded] = useState(false)
   const profit = bet.potential_win - bet.stake
   const evPercent = (bet.expected_value * 100).toFixed(1)
@@ -121,7 +122,7 @@ export default function BetCard({ bet, onSettle, showActions = false }: Props) {
         </p>
       )}
 
-      {/* Settlement actions */}
+      {/* Settlement actions (pending bets) */}
       {showActions && bet.status === 'pending' && onSettle && (
         <div className="flex gap-2 mt-3 pt-3 border-t border-gray-800">
           <button
@@ -141,6 +142,18 @@ export default function BetCard({ bet, onSettle, showActions = false }: Props) {
             className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-gray-700/50 hover:bg-gray-700 text-gray-400 text-xs font-medium transition-colors border border-gray-700"
           >
             <RotateCcw size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* Unsettle action (settled bets in history) */}
+      {showActions && bet.status !== 'pending' && onUnsettle && (
+        <div className="mt-3 pt-3 border-t border-gray-800">
+          <button
+            onClick={() => onUnsettle(bet.id)}
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-yellow-400 transition-colors"
+          >
+            <RotateCcw size={12} /> Remettre en cours
           </button>
         </div>
       )}
