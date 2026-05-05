@@ -1,5 +1,6 @@
 // The Odds API — https://the-odds-api.com
-// Free tier: 500 requests/month (we use ~90-120/month)
+// Free tier: 500 requests/month
+// Note: markets=h2h,totals costs 2 credits per sport fetch
 
 export interface Match {
   matchId: string
@@ -17,6 +18,7 @@ export interface Odd {
   label: string
   value: number
   betType: string
+  point?: number
 }
 
 export interface MatchResult {
@@ -61,8 +63,7 @@ interface OddsApiSport {
   has_outrights: boolean
 }
 
-// Fetch matches within a 48-hour window
-// windowStart and windowEnd are ISO timestamps
+// Fetch matches within a time window
 export async function fetchMatchesInWindow(windowStart: Date, windowEnd: Date): Promise<Match[]> {
   const res = await fetch(`${BASE}/sports?apiKey=${API_KEY}`, {
     signal: AbortSignal.timeout(8000),
@@ -87,11 +88,18 @@ export async function fetchMatchesInWindow(windowStart: Date, windowEnd: Date): 
   return matches
 }
 
+// Soccer sports get totals (Over/Under goals) in addition to H2H
+function getMarketsForSport(sportKey: string): string {
+  if (sportKey.startsWith('soccer')) return 'h2h,totals'
+  return 'h2h'
+}
+
 async function fetchSportOdds(sportKey: string, sportName: string, competition: string, windowStart: Date, windowEnd: Date): Promise<Match[]> {
+  const markets = getMarketsForSport(sportKey)
   const params = new URLSearchParams({
     apiKey: API_KEY,
     regions: 'eu',
-    markets: 'h2h',
+    markets,
     oddsFormat: 'decimal',
     dateFormat: 'iso',
   })
@@ -133,37 +141,70 @@ interface OddsApiEvent {
     title: string
     markets: Array<{
       key: string
-      outcomes: Array<{ name: string; price: number }>
+      outcomes: Array<{ name: string; price: number; point?: number }>
     }>
   }>
 }
 
+interface OutcomeAccum {
+  prices: number[]
+  name: string
+  market: 'h2h' | 'totals'
+  point?: number
+}
+
 function parseEvent(event: OddsApiEvent, sportName: string, competition: string): Match {
-  const outcomeMap: Record<string, number[]> = {}
+  const outcomeMap: Record<string, OutcomeAccum> = {}
 
   for (const bookmaker of event.bookmakers) {
     for (const market of bookmaker.markets) {
-      if (market.key !== 'h2h') continue
-      for (const outcome of market.outcomes) {
-        if (!outcomeMap[outcome.name]) outcomeMap[outcome.name] = []
-        outcomeMap[outcome.name].push(outcome.price)
+      if (market.key === 'h2h') {
+        for (const outcome of market.outcomes) {
+          const key = `h2h_${outcome.name}`
+          if (!outcomeMap[key]) outcomeMap[key] = { prices: [], name: outcome.name, market: 'h2h' }
+          outcomeMap[key].prices.push(outcome.price)
+        }
+      } else if (market.key === 'totals') {
+        for (const outcome of market.outcomes) {
+          const key = `totals_${outcome.name}_${outcome.point}`
+          if (!outcomeMap[key]) outcomeMap[key] = { prices: [], name: outcome.name, market: 'totals', point: outcome.point }
+          outcomeMap[key].prices.push(outcome.price)
+        }
       }
     }
   }
 
-  const odds: Odd[] = Object.entries(outcomeMap).map(([name, prices]) => {
-    const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length
-    let betType = 'H2H'
-    if (name === event.home_team) betType = '1'
-    else if (name === event.away_team) betType = '2'
-    else if (name === 'Draw') betType = 'X'
+  const odds: Odd[] = []
 
-    return {
-      label: name === 'Draw' ? 'Match nul' : name,
-      value: Math.round(avgPrice * 100) / 100,
-      betType,
+  for (const acc of Object.values(outcomeMap)) {
+    if (acc.prices.length === 0) continue
+    const avgPrice = acc.prices.reduce((a, b) => a + b, 0) / acc.prices.length
+    if (avgPrice <= 1.01) continue
+
+    if (acc.market === 'h2h') {
+      let betType = 'H2H'
+      if (acc.name === event.home_team) betType = '1'
+      else if (acc.name === event.away_team) betType = '2'
+      else if (acc.name === 'Draw') betType = 'X'
+
+      odds.push({
+        label: acc.name === 'Draw' ? 'Match nul' : acc.name,
+        value: Math.round(avgPrice * 100) / 100,
+        betType,
+      })
+    } else if (acc.market === 'totals' && acc.point !== undefined) {
+      // e.g. betType = "over_2.5" or "under_2.5"
+      const direction = acc.name.toLowerCase() // "over" or "under"
+      const betType = `${direction}_${acc.point}`
+      const label = `${acc.name === 'Over' ? 'Plus de' : 'Moins de'} ${acc.point} buts`
+      odds.push({
+        label,
+        value: Math.round(avgPrice * 100) / 100,
+        betType,
+        point: acc.point,
+      })
     }
-  }).filter(o => o.value > 1.01)
+  }
 
   return {
     matchId: event.id,
