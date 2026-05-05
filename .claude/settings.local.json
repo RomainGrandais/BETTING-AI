@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(git add *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --title 'Improve algo: Over/Under, combos, adaptive Kelly, delete bet + bug fixes' --body ' *)"
+    ]
+  }
+}

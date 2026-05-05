@@ -1,19 +1,9 @@
+export const dynamic = 'force-dynamic'
+
 import { NextResponse } from 'next/server'
 import { fetchMatchResults } from '@/lib/odds-api'
 import { supabaseAdmin } from '@/lib/supabase'
-
-interface PendingBet {
-  id: string
-  match_id: string
-  sport: string
-  home_team: string
-  away_team: string
-  bet_type: string
-  bet_label: string
-  stake: number
-  potential_win: number
-  sport_key?: string
-}
+import { determineBetResult, deriveSportKey, BetForSettlement } from '@/lib/settle'
 
 export async function POST() {
   try {
@@ -28,11 +18,11 @@ export async function POST() {
       return NextResponse.json({ success: true, settled: 0, message: 'Aucun pari en attente' })
     }
 
-    // Filter out combo bets (they have match_id starting with "COMBO_")
-    const settleable = (pendingBets as PendingBet[]).filter(b => !b.match_id.startsWith('COMBO_'))
+    // Filter out combo bets (match_id starts with "COMBO_")
+    const settleable = (pendingBets as BetForSettlement[]).filter(b => !b.match_id.startsWith('COMBO_'))
 
     // 2. Group by sport_key to minimize API calls
-    const bySport: Record<string, PendingBet[]> = {}
+    const bySport: Record<string, BetForSettlement[]> = {}
     for (const bet of settleable) {
       const sportKey = bet.sport_key || deriveSportKey(bet.sport)
       if (!bySport[sportKey]) bySport[sportKey] = []
@@ -72,7 +62,7 @@ export async function POST() {
       }
     }
 
-    // 4. Update bankroll for all settled bets in one entry
+    // 4. Update bankroll in one entry
     if (totalSettled > 0) {
       const { data: lastBankroll } = await supabaseAdmin
         .from('bankroll_history')
@@ -103,55 +93,4 @@ export async function POST() {
     console.error('Auto-settle error:', err)
     return NextResponse.json({ success: false, error: String(err) }, { status: 500 })
   }
-}
-
-function deriveSportKey(sport: string): string {
-  const map: Record<string, string> = {
-    'Football': 'soccer_epl',
-    'Tennis': 'tennis_atp_french_open',
-    'Basketball': 'basketball_nba',
-    'Hockey sur glace': 'icehockey_nhl',
-    'Rugby': 'rugby_union_super_rugby',
-    'Baseball': 'baseball_mlb',
-    'MMA': 'mma_mixed_martial_arts',
-  }
-  return map[sport] || 'soccer_epl'
-}
-
-export function determineBetResult(
-  bet: PendingBet,
-  winner: 'home' | 'away' | 'draw' | null,
-  homeScore: number | null,
-  awayScore: number | null
-): 'won' | 'lost' | null {
-  const betType = bet.bet_type
-
-  // Over/Under totals: e.g. "over_2.5", "under_1.5"
-  if (betType.startsWith('over_') || betType.startsWith('under_')) {
-    if (homeScore === null || awayScore === null) return null
-    const line = parseFloat(betType.split('_')[1])
-    if (isNaN(line)) return null
-    const totalGoals = homeScore + awayScore
-    if (betType.startsWith('over_')) return totalGoals > line ? 'won' : 'lost'
-    return totalGoals < line ? 'won' : 'lost'
-  }
-
-  // BTTS (Both Teams To Score) — future market support
-  if (betType === 'btts_yes') {
-    if (homeScore === null || awayScore === null) return null
-    return homeScore > 0 && awayScore > 0 ? 'won' : 'lost'
-  }
-  if (betType === 'btts_no') {
-    if (homeScore === null || awayScore === null) return null
-    return homeScore === 0 || awayScore === 0 ? 'won' : 'lost'
-  }
-
-  // H2H / 1X2 — use bet_type field exclusively (reliable, no string matching)
-  if (!winner) return null
-  if (betType === '1') return winner === 'home' ? 'won' : 'lost'
-  if (betType === '2') return winner === 'away' ? 'won' : 'lost'
-  if (betType === 'X') return winner === 'draw' ? 'won' : 'lost'
-
-  // Combo bets and unknown types must be settled manually
-  return null
 }

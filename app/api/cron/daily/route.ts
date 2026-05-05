@@ -1,8 +1,10 @@
+export const dynamic = 'force-dynamic'
+
 import { NextResponse } from 'next/server'
 import { fetchMatchesInWindow, fetchMatchResults } from '@/lib/odds-api'
 import { analyzeMatchesWithClaude, SportStat } from '@/lib/claude'
 import { supabaseAdmin } from '@/lib/supabase'
-import { determineBetResult } from '@/app/api/settle-auto/route'
+import { determineBetResult, deriveSportKey, BetForSettlement } from '@/lib/settle'
 
 // Vercel Cron handler — called daily at 6:00 AM UTC
 export async function GET(request: Request) {
@@ -28,11 +30,10 @@ export async function GET(request: Request) {
     // Step 3: Fetch performance stats for Claude
     const { sportStats, recentROI } = await fetchPerformanceStats()
 
-    // Step 4: Define analysis window — 6 AM UTC today → 6 AM UTC tomorrow (fixed, UTC-safe)
+    // Step 4: Analysis window — 6 AM UTC today → 6 AM UTC tomorrow (UTC-safe)
     const now = new Date()
     const windowStart = new Date(now)
     windowStart.setUTCHours(6, 0, 0, 0)
-    // If we haven't reached 6 AM UTC yet today, go back to yesterday's 6 AM
     if (now.getUTCHours() < 6) windowStart.setUTCDate(windowStart.getUTCDate() - 1)
     const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000)
 
@@ -82,7 +83,7 @@ export async function GET(request: Request) {
       })
     }
 
-    // Step 8: Apply safety cap (max 30% of bankroll per session)
+    // Step 8: Safety cap (max 30% of bankroll per session)
     const rawTotalStake = decisions.reduce((sum, d) => sum + d.stake, 0)
     if (rawTotalStake > currentBankroll * 0.3) {
       const scaleFactor = (currentBankroll * 0.3) / rawTotalStake
@@ -123,10 +124,7 @@ export async function GET(request: Request) {
     })
   } catch (err) {
     console.error('Daily routine error:', err)
-    return NextResponse.json(
-      { success: false, error: String(err) },
-      { status: 500 }
-    )
+    return NextResponse.json({ success: false, error: String(err) }, { status: 500 })
   }
 }
 
@@ -139,10 +137,9 @@ async function autoSettleBets(): Promise<{ won: number; lost: number }> {
 
     if (!pendingBets || pendingBets.length === 0) return { won: 0, lost: 0 }
 
-    // Skip combo bets
-    const settleable = pendingBets.filter((b: { match_id: string }) => !b.match_id.startsWith('COMBO_'))
+    const settleable = (pendingBets as BetForSettlement[]).filter(b => !b.match_id.startsWith('COMBO_'))
 
-    const bySport: Record<string, typeof settleable> = {}
+    const bySport: Record<string, BetForSettlement[]> = {}
     for (const bet of settleable) {
       const sportKey = bet.sport_key || deriveSportKey(bet.sport)
       if (!bySport[sportKey]) bySport[sportKey] = []
@@ -189,7 +186,6 @@ async function autoSettleBets(): Promise<{ won: number; lost: number }> {
 
       const current = lastBankroll?.amount ?? 100
       const newBankroll = Math.round((current + bankrollDelta) * 100) / 100
-
       await supabaseAdmin.from('bankroll_history').insert({
         amount: newBankroll,
         event: `Daily settle: ${totalWon}W ${totalLost}L ${bankrollDelta >= 0 ? '+' : ''}${bankrollDelta.toFixed(2)}€`,
@@ -201,19 +197,6 @@ async function autoSettleBets(): Promise<{ won: number; lost: number }> {
     console.error('Auto-settle error:', err)
     return { won: 0, lost: 0 }
   }
-}
-
-function deriveSportKey(sport: string): string {
-  const map: Record<string, string> = {
-    'Football': 'soccer_epl',
-    'Tennis': 'tennis_atp_french_open',
-    'Basketball': 'basketball_nba',
-    'Hockey sur glace': 'icehockey_nhl',
-    'Rugby': 'rugby_union_super_rugby',
-    'Baseball': 'baseball_mlb',
-    'MMA': 'mma_mixed_martial_arts',
-  }
-  return map[sport] || 'soccer_epl'
 }
 
 async function fetchPerformanceStats(): Promise<{ sportStats: SportStat[]; recentROI: number }> {

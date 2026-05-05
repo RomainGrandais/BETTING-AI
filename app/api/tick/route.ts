@@ -1,3 +1,5 @@
+export const dynamic = 'force-dynamic'
+
 import { NextResponse } from 'next/server'
 
 // Called every 8h by Vercel Cron — chains auto-settle then analyze
