@@ -96,30 +96,40 @@ function getMarketsForSport(sportKey: string): string {
 
 async function fetchSportOdds(sportKey: string, sportName: string, competition: string, windowStart: Date, windowEnd: Date): Promise<Match[]> {
   const markets = getMarketsForSport(sportKey)
-  const params = new URLSearchParams({
-    apiKey: API_KEY,
-    regions: 'eu',
-    markets,
-    oddsFormat: 'decimal',
-    dateFormat: 'iso',
-  })
 
-  const res = await fetch(`${BASE}/sports/${sportKey}/odds?${params}`, {
-    signal: AbortSignal.timeout(8000),
-  })
+  // Try with requested markets first; fall back to h2h-only if it fails
+  const marketsToTry = markets === 'h2h' ? ['h2h'] : [markets, 'h2h']
 
-  if (res.status === 422 || res.status === 404) return []
-  if (!res.ok) throw new Error(`Odds fetch failed for ${sportKey}: ${res.status}`)
-
-  const events = await res.json() as OddsApiEvent[]
-
-  return events
-    .filter(e => {
-      const start = new Date(e.commence_time)
-      return start >= windowStart && start <= windowEnd
+  for (const m of marketsToTry) {
+    const params = new URLSearchParams({
+      apiKey: API_KEY,
+      regions: 'eu',
+      markets: m,
+      oddsFormat: 'decimal',
+      dateFormat: 'iso',
     })
-    .map(e => parseEvent(e, sportName, competition))
-    .filter(m => m.odds.length > 0)
+
+    const res = await fetch(`${BASE}/sports/${sportKey}/odds?${params}`, {
+      signal: AbortSignal.timeout(10000),
+    })
+
+    if (res.status === 422 || res.status === 404) {
+      if (m !== 'h2h') continue  // retry with h2h only
+      return []
+    }
+    if (!res.ok) throw new Error(`Odds fetch failed for ${sportKey}: ${res.status}`)
+
+    const events = await res.json() as OddsApiEvent[]
+    return events
+      .filter(e => {
+        const start = new Date(e.commence_time)
+        return start >= windowStart && start <= windowEnd
+      })
+      .map(e => parseEvent(e, sportName, competition))
+      .filter(m2 => m2.odds.length > 0)
+  }
+
+  return []
 }
 
 // Manual analyze endpoint — 24h from now
