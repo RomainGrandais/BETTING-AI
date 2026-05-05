@@ -130,6 +130,17 @@ export default function Dashboard() {
     }
   }
 
+  const handleDelete = async (betId: string) => {
+    try {
+      const res = await fetch(`/api/bets/${betId}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (data.success) await fetchData()
+      else setError(data.error)
+    } catch {
+      setError('Erreur lors de la suppression')
+    }
+  }
+
   // Sort by match start time ascending (soonest first)
   const sortedBets = [...bets].sort((a, b) =>
     new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
@@ -303,6 +314,7 @@ export default function Dashboard() {
                     key={bet.id}
                     bet={bet}
                     onSettle={handleSettle}
+                    onDelete={handleDelete}
                     showActions={true}
                   />
                 ))

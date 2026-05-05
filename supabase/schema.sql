@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS bets (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   match_id text NOT NULL,
   sport text NOT NULL,
+  sport_key text DEFAULT '',
   home_team text NOT NULL,
   away_team text NOT NULL,
   competition text DEFAULT '',
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS bets (
   stake decimal(8, 2) NOT NULL,
   potential_win decimal(8, 2) NOT NULL,
   ai_reasoning text DEFAULT '',
+  combo_legs jsonb DEFAULT NULL,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'won', 'lost', 'void')),
   created_at timestamptz DEFAULT now(),
   settled_at timestamptz

@@ -17,7 +17,7 @@ interface PendingBet {
 
 export async function POST() {
   try {
-    // 1. Get all pending bets
+    // 1. Get all pending bets (skip combos — manual settle only)
     const { data: pendingBets, error } = await supabaseAdmin
       .from('bets')
       .select('id, match_id, sport, home_team, away_team, bet_type, bet_label, stake, potential_win, sport_key')
@@ -28,9 +28,12 @@ export async function POST() {
       return NextResponse.json({ success: true, settled: 0, message: 'Aucun pari en attente' })
     }
 
+    // Filter out combo bets (they have match_id starting with "COMBO_")
+    const settleable = (pendingBets as PendingBet[]).filter(b => !b.match_id.startsWith('COMBO_'))
+
     // 2. Group by sport_key to minimize API calls
     const bySport: Record<string, PendingBet[]> = {}
-    for (const bet of pendingBets as PendingBet[]) {
+    for (const bet of settleable) {
       const sportKey = bet.sport_key || deriveSportKey(bet.sport)
       if (!bySport[sportKey]) bySport[sportKey] = []
       bySport[sportKey].push(bet)
@@ -50,22 +53,19 @@ export async function POST() {
         const result = resultMap.get(bet.match_id)
         if (!result?.completed) continue
 
-        // Determine if bet won or lost based on bet_type and result
-        const betResult = determineBetResult(bet, result.winner)
-        if (!betResult) continue // Can't determine — skip
+        const betResult = determineBetResult(bet, result.winner, result.homeScore, result.awayScore)
+        if (!betResult) continue
 
-        // Update bet status
         await supabaseAdmin
           .from('bets')
           .update({ status: betResult, settled_at: new Date().toISOString() })
           .eq('id', bet.id)
 
-        // Bankroll: won = +profit only, lost = -stake
         if (betResult === 'won') {
-          bankrollDelta += bet.potential_win - bet.stake // net profit
+          bankrollDelta += bet.potential_win - bet.stake
           totalWon++
         } else if (betResult === 'lost') {
-          bankrollDelta -= bet.stake // deduct stake on loss
+          bankrollDelta -= bet.stake
           totalLost++
         }
         totalSettled++
@@ -85,7 +85,7 @@ export async function POST() {
       const newBankroll = Math.round((currentBankroll + bankrollDelta) * 100) / 100
       await supabaseAdmin.from('bankroll_history').insert({
         amount: newBankroll,
-        event: `Auto-règlement: ${totalWon} gagné(s) (+€${(bankrollDelta > 0 ? bankrollDelta : 0).toFixed(2)}), ${totalLost} perdu(s)`,
+        event: `Auto-règlement: ${totalWon} gagné(s) (+€${Math.max(0, bankrollDelta).toFixed(2)}), ${totalLost} perdu(s)`,
       })
     }
 
@@ -107,32 +107,51 @@ export async function POST() {
 
 function deriveSportKey(sport: string): string {
   const map: Record<string, string> = {
-    'Football': 'soccer_france_ligue_one',
-    'Tennis': 'tennis_atp',
+    'Football': 'soccer_epl',
+    'Tennis': 'tennis_atp_french_open',
     'Basketball': 'basketball_nba',
     'Hockey sur glace': 'icehockey_nhl',
     'Rugby': 'rugby_union_super_rugby',
     'Baseball': 'baseball_mlb',
     'MMA': 'mma_mixed_martial_arts',
   }
-  return map[sport] || 'soccer_france_ligue_one'
+  return map[sport] || 'soccer_epl'
 }
 
-function determineBetResult(
+export function determineBetResult(
   bet: PendingBet,
-  winner: 'home' | 'away' | 'draw' | null
+  winner: 'home' | 'away' | 'draw' | null,
+  homeScore: number | null,
+  awayScore: number | null
 ): 'won' | 'lost' | null {
-  if (!winner) return null
-
   const betType = bet.bet_type
-  if (betType === '1' || bet.bet_label.toLowerCase().includes(bet.home_team.toLowerCase())) {
-    return winner === 'home' ? 'won' : 'lost'
+
+  // Over/Under totals: e.g. "over_2.5", "under_1.5"
+  if (betType.startsWith('over_') || betType.startsWith('under_')) {
+    if (homeScore === null || awayScore === null) return null
+    const line = parseFloat(betType.split('_')[1])
+    if (isNaN(line)) return null
+    const totalGoals = homeScore + awayScore
+    if (betType.startsWith('over_')) return totalGoals > line ? 'won' : 'lost'
+    return totalGoals < line ? 'won' : 'lost'
   }
-  if (betType === '2' || bet.bet_label.toLowerCase().includes(bet.away_team.toLowerCase())) {
-    return winner === 'away' ? 'won' : 'lost'
+
+  // BTTS (Both Teams To Score) — future market support
+  if (betType === 'btts_yes') {
+    if (homeScore === null || awayScore === null) return null
+    return homeScore > 0 && awayScore > 0 ? 'won' : 'lost'
   }
-  if (betType === 'X' || bet.bet_label.toLowerCase().includes('nul')) {
-    return winner === 'draw' ? 'won' : 'lost'
+  if (betType === 'btts_no') {
+    if (homeScore === null || awayScore === null) return null
+    return homeScore === 0 || awayScore === 0 ? 'won' : 'lost'
   }
+
+  // H2H / 1X2 — use bet_type field exclusively (reliable, no string matching)
+  if (!winner) return null
+  if (betType === '1') return winner === 'home' ? 'won' : 'lost'
+  if (betType === '2') return winner === 'away' ? 'won' : 'lost'
+  if (betType === 'X') return winner === 'draw' ? 'won' : 'lost'
+
+  // Combo bets and unknown types must be settled manually
   return null
 }

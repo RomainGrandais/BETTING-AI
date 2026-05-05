@@ -5,17 +5,29 @@ export function kellyCriterion(odds: number, estimatedProbability: number): numb
   const p = estimatedProbability
   const q = 1 - p
   const kelly = (b * p - q) / b
-  // Use fractional Kelly (25%) to reduce variance
-  return Math.max(0, kelly * 0.25)
+  return Math.max(0, kelly)
+}
+
+// Adjust the fractional Kelly multiplier based on recent performance.
+// Reduces exposure during bad streaks, increases slightly during good runs.
+export function adaptiveKellyMultiplier(recentROI: number): number {
+  if (recentROI < -0.20) return 0.10  // severe drawdown: very conservative
+  if (recentROI < -0.10) return 0.15  // losing streak: defensive
+  if (recentROI < 0)     return 0.20  // slight negative: cautious
+  if (recentROI < 0.15)  return 0.25  // baseline (default)
+  if (recentROI < 0.30)  return 0.30  // performing well: slightly more aggressive
+  return 0.35                          // strong run: more aggressive, still capped
 }
 
 export function calculateStake(
   bankroll: number,
   odds: number,
   estimatedProbability: number,
-  maxStakePercent = 0.05  // max 5% of bankroll per bet
+  maxStakePercent = 0.05,
+  recentROI = 0
 ): number {
-  const kellyFraction = kellyCriterion(odds, estimatedProbability)
+  const multiplier = adaptiveKellyMultiplier(recentROI)
+  const kellyFraction = kellyCriterion(odds, estimatedProbability) * multiplier
   const rawStake = bankroll * kellyFraction
   const maxStake = bankroll * maxStakePercent
   const stake = Math.min(rawStake, maxStake)

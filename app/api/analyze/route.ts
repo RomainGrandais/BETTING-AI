@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { fetchMatchesInWindow } from '@/lib/odds-api'
-import { analyzeMatchesWithClaude } from '@/lib/claude'
+import { analyzeMatchesWithClaude, SportStat } from '@/lib/claude'
 import { supabaseAdmin } from '@/lib/supabase'
 
 export async function POST() {
@@ -25,8 +25,10 @@ export async function POST() {
       .select('*', { count: 'exact', head: true })
       .eq('status', 'pending')
 
-    // 3. Fetch matches in fixed daily window: 6 AM UTC today → 6 AM UTC tomorrow
-    // (same window as the cron, so manual analysis always covers the full day)
+    // 3. Fetch performance stats to guide Claude's selection
+    const { sportStats, recentROI } = await fetchPerformanceStats()
+
+    // 4. Fetch matches in fixed daily window: 6 AM UTC today → 6 AM UTC tomorrow
     const now = new Date()
     const windowStart = new Date(now)
     windowStart.setUTCHours(6, 0, 0, 0)
@@ -44,7 +46,7 @@ export async function POST() {
       })
     }
 
-    // 4. Filter out matches already bet on
+    // 5. Filter out matches already bet on
     const { data: existingBets } = await supabaseAdmin
       .from('bets')
       .select('match_id')
@@ -53,11 +55,13 @@ export async function POST() {
     const betMatchIds = new Set((existingBets || []).map(b => b.match_id))
     const newMatches = matches.filter(m => !betMatchIds.has(m.matchId))
 
-    // 5. Ask Claude to analyze and pick bets
+    // 6. Ask Claude to analyze and pick bets (with performance context)
     const decisions = await analyzeMatchesWithClaude(
       newMatches,
       currentBankroll,
-      activeBetsCount ?? 0
+      activeBetsCount ?? 0,
+      sportStats,
+      recentROI
     )
 
     if (decisions.length === 0) {
@@ -69,14 +73,14 @@ export async function POST() {
       })
     }
 
-    // 6. Safety cap: never put more than 30% of bankroll at risk in one session
+    // 7. Safety cap: never put more than 30% of bankroll at risk in one session
     const rawTotalStake = decisions.reduce((sum, d) => sum + d.stake, 0)
     if (rawTotalStake > currentBankroll * 0.3) {
       const scaleFactor = (currentBankroll * 0.3) / rawTotalStake
       decisions.forEach(d => { d.stake = Math.round(d.stake * scaleFactor * 100) / 100 })
     }
 
-    // 7. Insert bets into DB
+    // 8. Insert bets into DB
     const betsToInsert = decisions.map(d => ({
       match_id: d.matchId,
       sport: d.sport,
@@ -93,14 +97,13 @@ export async function POST() {
       stake: d.stake,
       potential_win: Math.round(d.stake * d.odds * 100) / 100,
       ai_reasoning: d.reasoning,
+      combo_legs: d.comboLegs ?? null,
       status: 'pending',
     }))
 
     const { error: insertError } = await supabaseAdmin.from('bets').insert(betsToInsert)
     if (insertError) throw new Error(`Insert bets error: ${insertError.message}`)
 
-    // Bankroll is NOT updated here — it moves only when bets are settled
-    // (win = +profit, loss = -stake). Stakes in play are tracked via pending bets.
     const totalStake = decisions.reduce((sum, d) => sum + d.stake, 0)
 
     return NextResponse.json({
@@ -109,6 +112,7 @@ export async function POST() {
       matchesFound: matches.length,
       betsPlaced: decisions.length,
       totalStake,
+      recentROI,
       bets: decisions,
     })
   } catch (error) {
@@ -117,5 +121,45 @@ export async function POST() {
       { success: false, error: String(error) },
       { status: 500 }
     )
+  }
+}
+
+async function fetchPerformanceStats(): Promise<{ sportStats: SportStat[]; recentROI: number }> {
+  try {
+    const { data: settled } = await supabaseAdmin
+      .from('bets')
+      .select('sport, status, stake, potential_win')
+      .in('status', ['won', 'lost'])
+      .order('created_at', { ascending: false })
+      .limit(100)
+
+    if (!settled || settled.length === 0) return { sportStats: [], recentROI: 0 }
+
+    // Per-sport stats
+    const bySport: Record<string, { won: number; lost: number; staked: number; returned: number }> = {}
+    for (const bet of settled) {
+      if (!bySport[bet.sport]) bySport[bet.sport] = { won: 0, lost: 0, staked: 0, returned: 0 }
+      const s = bySport[bet.sport]
+      s.staked += bet.stake
+      if (bet.status === 'won') { s.won++; s.returned += bet.potential_win }
+      else s.lost++
+    }
+
+    const sportStats: SportStat[] = Object.entries(bySport).map(([sport, s]) => ({
+      sport,
+      bets: s.won + s.lost,
+      winRate: s.won / (s.won + s.lost),
+      roi: s.staked > 0 ? (s.returned - s.staked) / s.staked : 0,
+    }))
+
+    // Recent ROI: last 10 settled bets
+    const recent = settled.slice(0, 10)
+    const recentStaked = recent.reduce((sum, b) => sum + b.stake, 0)
+    const recentReturned = recent.filter(b => b.status === 'won').reduce((sum, b) => sum + b.potential_win, 0)
+    const recentROI = recentStaked > 0 ? (recentReturned - recentStaked) / recentStaked : 0
+
+    return { sportStats, recentROI }
+  } catch {
+    return { sportStats: [], recentROI: 0 }
   }
 }
